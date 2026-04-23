@@ -118,10 +118,21 @@ define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 if [ -f /tmp/miclash_config.yaml.bak ]; then
 	mv /tmp/miclash_config.yaml.bak /opt/clash/config.yaml
+	FIRST_INSTALL=0
+else
+	FIRST_INSTALL=1
 fi
 [ -n "$$IPKG_INSTROOT" ] || {
 	/etc/init.d/rpcd reload
 	rm -f /tmp/luci-*
+
+	# On first install the default config.yaml is just a usable example
+	# (no real proxies configured). Prevent auto-start on next boot so the
+	# user can edit /opt/clash/config.yaml first. "Start Service" in LuCI
+	# re-enables it via `/etc/init.d/clash enable`.
+	if [ "$$FIRST_INSTALL" = "1" ]; then
+		/etc/init.d/clash disable 2>/dev/null || true
+	fi
 
 	# Ensure periodic clash-rules update cron job exists
 	CRON_FILE="/etc/crontabs/root"
@@ -162,6 +173,7 @@ define Package/$(PKG_NAME)/postrm
 
 	rm -rf /opt/clash/ui
 	rm -f /opt/clash/ruleset
+	rm -f /opt/clash/.dns_backup
 	rm -rf /tmp/clash
 	rm -rf /www/luci-static/resources/view/miclash
 	rm -f /usr/lib/lua/luci/i18n/miclash.*.lmo
