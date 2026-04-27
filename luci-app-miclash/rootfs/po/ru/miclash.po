@@ -77,6 +77,9 @@ msgstr "Сохранить и применить"
 msgid "Unable to start and enable service: %s"
 msgstr "Не удалось запустить и включить службу: %s"
 
+msgid "Unable to start service: %s"
+msgstr "Не удалось запустить службу: %s"
+
 msgid "Unable to stop and disable service: %s"
 msgstr "Не удалось остановить и отключить службу: %s"
 
@@ -781,6 +784,9 @@ msgstr "Установленная версия: %s"
 
 msgid "Not installed"
 msgstr "Не установлено"
+
+msgid "Mihomo kernel is not installed."
+msgstr "Ядро Mihomo не установлено."
 
 msgid "Install Kernel"
 msgstr "Установить ядро"

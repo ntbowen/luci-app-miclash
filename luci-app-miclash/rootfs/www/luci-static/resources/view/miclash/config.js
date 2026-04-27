@@ -434,6 +434,18 @@ async function getMihomoStatus() {
 	return { installed: true, version: _('Installed') };
 }
 
+async function ensureMihomoKernelInstalled() {
+	const status = await getMihomoStatus();
+	appState.kernelStatus = status;
+
+	if (!status || !status.installed) {
+		updateHeaderAndControlDom();
+		throw new Error(_('Mihomo kernel is not installed.'));
+	}
+
+	return status;
+}
+
 async function getLatestMihomoRelease() {
 	try {
 		const response = await fetch(MIHOMO_RELEASE_API);
@@ -1272,6 +1284,12 @@ async function testConfigContent(content, keepOnSuccess, targetPath) {
 	const normalized = String(content || '').trimEnd() + '\n';
 	const configPath = String(targetPath || CONFIG_PATH);
 	let original = '';
+
+	try {
+		await ensureMihomoKernelInstalled();
+	} catch (e) {
+		return { ok: false, message: e.message || _('Mihomo kernel is not installed.') };
+	}
 
 	try {
 		original = await fs.read(configPath);
@@ -3125,6 +3143,7 @@ function bindControlAndHeaderEvents() {
 		startBtn.addEventListener('click', async () => {
 			try {
 				await withServiceButtons(startBtn, stopBtn, async () => {
+					await ensureMihomoKernelInstalled();
 					await execService('enable');
 					await execService('start');
 					if (!(await waitForServiceStatus(true))) {
@@ -3282,6 +3301,7 @@ function bindConfigEvents() {
 				const url = String(subInput?.value || '').trim();
 				if (!url) throw new Error(_('Subscription URL is empty.'));
 				if (!isValidUrl(url)) throw new Error(_('Invalid subscription URL.'));
+				await ensureMihomoKernelInstalled();
 
 				const selectedConfig = normalizeConfigProfileName(appState.selectedConfigName);
 				const selectedPath = getConfigPathByName(selectedConfig);
