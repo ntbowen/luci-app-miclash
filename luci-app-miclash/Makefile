@@ -123,7 +123,7 @@ else
 	FIRST_INSTALL=1
 fi
 [ -n "$$IPKG_INSTROOT" ] || {
-	rm -f /tmp/luci-*
+	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
 	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
@@ -192,7 +192,7 @@ define Package/$(PKG_NAME)/postrm
 	rm -f /etc/hotplug.d/iface/40-clash
 	rm -f /etc/hotplug.d/net/99-clash-tun
 	rm -f /etc/apk/protected_paths.d/miclash.list
-	rm -f /tmp/luci-*
+	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
 	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
