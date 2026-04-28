@@ -123,8 +123,9 @@ else
 	FIRST_INSTALL=1
 fi
 [ -n "$$IPKG_INSTROOT" ] || {
-	/etc/init.d/rpcd reload
 	rm -f /tmp/luci-*
+	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
 	# On first install the default config.yaml is just a usable example
 	# (no real proxies configured). Prevent auto-start on next boot so the
@@ -191,6 +192,9 @@ define Package/$(PKG_NAME)/postrm
 	rm -f /etc/hotplug.d/iface/40-clash
 	rm -f /etc/hotplug.d/net/99-clash-tun
 	rm -f /etc/apk/protected_paths.d/miclash.list
+	rm -f /tmp/luci-*
+	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
 	# Remove manually installed Mihomo core only on full package removal.
 	case "$$1" in
