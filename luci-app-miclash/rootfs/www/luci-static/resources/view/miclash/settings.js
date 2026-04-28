@@ -428,6 +428,7 @@ async function loadSettings() {
             autoDetectLan: true,
             autoDetectWan: true,
             blockQuic: true,
+            internetOnlyMiclash: false,
             useTmpfsRules: true,
             detectedLan: '',
             detectedWan: '',
@@ -451,6 +452,7 @@ async function loadSettings() {
                 case 'AUTO_DETECT_LAN': settings.autoDetectLan = value === 'true'; break;
                 case 'AUTO_DETECT_WAN': settings.autoDetectWan = value === 'true'; break;
                 case 'BLOCK_QUIC': settings.blockQuic = value === 'true'; break;
+                case 'INTERNET_ONLY_MICLASH': settings.internetOnlyMiclash = value === 'true'; break;
                 case 'USE_TMPFS_RULES': settings.useTmpfsRules = value === 'true'; break;
                 case 'DETECTED_LAN': settings.detectedLan = value; break;
                 case 'DETECTED_WAN': settings.detectedWan = value; break;
@@ -481,6 +483,7 @@ async function loadSettings() {
             autoDetectLan: true,
             autoDetectWan: true,
             blockQuic: true,
+            internetOnlyMiclash: false,
             useTmpfsRules: true,
             detectedLan: '',
             detectedWan: '',
@@ -510,7 +513,7 @@ async function loadInterfacesByMode(mode) {
     }
 }
 
-async function saveSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetectWan, blockQuic, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS) {
+async function saveSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetectWan, blockQuic, internetOnlyMiclash, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS) {
     try {
         let detectedLan = '';
         let detectedWan = '';
@@ -540,6 +543,7 @@ TUN_STACK=${tunStack}
 AUTO_DETECT_LAN=${autoDetectLan}
 AUTO_DETECT_WAN=${autoDetectWan}
 BLOCK_QUIC=${blockQuic}
+INTERNET_ONLY_MICLASH=${internetOnlyMiclash}
 USE_TMPFS_RULES=${useTmpfsRules}
 DETECTED_LAN=${detectedLan}
 DETECTED_WAN=${detectedWan}
@@ -551,6 +555,12 @@ HWID_DEVICE_OS=${hwidDeviceOS}
 `;
 
         await fs.write('/opt/clash/settings', settingsContent);
+
+        try {
+            await fs.exec('/opt/clash/bin/clash-rules', ['guard_refresh']);
+        } catch (e) {
+            console.warn('Failed to refresh MiClash guard rules:', e);
+        }
 
         const configContent = await L.resolveDefault(fs.read('/opt/clash/config.yaml'), '');
         if (configContent) {
@@ -1369,7 +1379,7 @@ function createInterfaceSelector(interfaces, selectedInterfaces, currentMode) {
     return container;
 }
 
-function createAdditionalSettings(blockQuic, useTmpfsRules, enableHwid, hwidUserAgent, hwidDeviceOS) {
+function createAdditionalSettings(blockQuic, internetOnlyMiclash, useTmpfsRules, enableHwid, hwidUserAgent, hwidDeviceOS) {
     const container = E('div', { 'class': 'cbi-section' });
 
     container.appendChild(E('h3', _('Additional Settings')));
@@ -1401,6 +1411,25 @@ function createAdditionalSettings(blockQuic, useTmpfsRules, enableHwid, hwidUser
 
     settingsContainer.appendChild(blockQuicLabel);
 
+    const internetOnlyCheckbox = E('input', {
+        'type': 'checkbox',
+        'id': 'internet_only_miclash'
+    });
+
+    const internetOnlyLabel = E('label', {
+        'for': 'internet_only_miclash',
+        'style': cardStyle
+    }, [
+        E('span', { 'style': cardHeaderStyle }, [
+            internetOnlyCheckbox,
+            E('span', _('Internet only through MiClash'))
+        ]),
+        E('span', { 'style': cardDescStyle },
+            _('Blocks direct external traffic from clients. If MiClash is stopped or fails, the internet is blocked while local network access remains available.'))
+    ]);
+
+    settingsContainer.appendChild(internetOnlyLabel);
+
     const tmpfsCheckbox = E('input', {
         'type': 'checkbox',
         'id': 'use_tmpfs_rules'
@@ -1422,6 +1451,7 @@ function createAdditionalSettings(blockQuic, useTmpfsRules, enableHwid, hwidUser
 
     setTimeout(() => {
         blockQuicCheckbox.checked = blockQuic;
+        internetOnlyCheckbox.checked = internetOnlyMiclash;
         tmpfsCheckbox.checked = useTmpfsRules;
     }, 0);
 
@@ -1624,6 +1654,7 @@ return view.extend({
         const interfaceSelector = createInterfaceSelector(interfaces, selectedInterfaces, settings.mode);
         const additionalSettings = createAdditionalSettings(
             settings.blockQuic,
+            settings.internetOnlyMiclash,
             settings.useTmpfsRules,
             settings.enableHwid,
             settings.hwidUserAgent,
@@ -1674,6 +1705,7 @@ return view.extend({
                 const autoDetectLan = autoDetectOptions.querySelector('#auto_detect_lan').checked;
                 const autoDetectWan = autoDetectOptions.querySelector('#auto_detect_wan').checked;
                 const blockQuic = additionalSettings.querySelector('#block_quic').checked;
+                const internetOnlyMiclash = additionalSettings.querySelector('#internet_only_miclash')?.checked || false;
                 const useTmpfsRules = additionalSettings.querySelector('#use_tmpfs_rules')?.checked ?? true;
                 const enableHwid = additionalSettings.querySelector('#enable_hwid')?.checked || false;
                 const hwidUserAgent = additionalSettings.querySelector('#hwid_user_agent')?.value || 'MiClash';
@@ -1692,6 +1724,7 @@ return view.extend({
                     autoDetectLan,
                     autoDetectWan,
                     blockQuic,
+                    internetOnlyMiclash,
                     useTmpfsRules,
                     selected,
                     enableHwid,

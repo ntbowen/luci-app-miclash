@@ -147,6 +147,15 @@ fi
 exit 0
 endef
 
+define Package/$(PKG_NAME)/prerm
+#!/bin/sh
+[ -n "$$IPKG_INSTROOT" ] || {
+	[ -x /etc/init.d/clash ] && /etc/init.d/clash stop >/dev/null 2>&1 || true
+	[ -x /opt/clash/bin/clash-rules ] && /opt/clash/bin/clash-rules full_cleanup >/dev/null 2>&1 || true
+}
+exit 0
+endef
+
 define Package/$(PKG_NAME)/postrm
 #!/bin/sh
 [ -n "$$IPKG_INSTROOT" ] || {
@@ -163,6 +172,8 @@ define Package/$(PKG_NAME)/postrm
 		fi
 		return 1
 	}
+
+	[ -x /opt/clash/bin/clash-rules ] && /opt/clash/bin/clash-rules full_cleanup >/dev/null 2>&1 || true
 
 	# Clean up cron job for clash-rules update, if present
 	CRON_FILE="/etc/crontabs/root"

@@ -15,6 +15,10 @@ readonly SUBSCRIPTION_CACHE_FILE="/tmp/clash/clash_subscription_ips.cache"
 readonly SUBSCRIPTION_LOCK_FILE="/tmp/clash/clash_subscription.lock"
 # Reserved networks
 readonly RESERVED_NETWORKS="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32"
+readonly RESERVED_NETWORKS6="::/128 ::1/128 fc00::/7 fe80::/10 ff00::/8"
+readonly GUARD_NFT_TABLE="miclash_guard"
+readonly GUARD_FORWARD_CHAIN="MICLASH_GUARD_FORWARD"
+readonly GUARD_OUTPUT_CHAIN="MICLASH_GUARD_OUTPUT"
 # Fake-ip whitelist IP-CIDR technical list (used only by the firewall, not by config.yaml)
 readonly FAKEIP_WHITELIST_FILE="/opt/clash/lst/fakeip-whitelist-ipcidr.txt"
 readonly FAKEIP_IPSET_NAME="clash_fakeip_whitelist"
@@ -28,6 +32,7 @@ PROXY_MODE="tproxy"
 AUTO_DETECT_LAN="true"
 AUTO_DETECT_WAN="true"
 BLOCK_QUIC="true"
+INTERNET_ONLY_MICLASH="false"
 TUN_STACK="system"
 DETECTED_LAN=""
 DETECTED_WAN=""
@@ -96,6 +101,7 @@ load_all_settings_once() {
             "AUTO_DETECT_LAN") AUTO_DETECT_LAN="$value" ;;
             "AUTO_DETECT_WAN") AUTO_DETECT_WAN="$value" ;;
             "BLOCK_QUIC") BLOCK_QUIC="$value" ;;
+            "INTERNET_ONLY_MICLASH") INTERNET_ONLY_MICLASH="$value" ;;
             "TUN_STACK") TUN_STACK="$value" ;;
             "DETECTED_LAN") DETECTED_LAN="$value" ;;
             "DETECTED_WAN") DETECTED_WAN="$value" ;;
@@ -111,6 +117,7 @@ load_all_settings_once() {
     [ -n "$AUTO_DETECT_LAN" ] && settings_part="$settings_part, Auto-detect LAN: $AUTO_DETECT_LAN"
     [ -n "$AUTO_DETECT_WAN" ] && settings_part="$settings_part, Auto-detect WAN: $AUTO_DETECT_WAN"
     [ -n "$BLOCK_QUIC" ] && settings_part="$settings_part, Block QUIC: $BLOCK_QUIC"
+    [ -n "$INTERNET_ONLY_MICLASH" ] && settings_part="$settings_part, Internet only through MiClash: $INTERNET_ONLY_MICLASH"
     [ -n "$TUN_STACK" ] && settings_part="$settings_part, TUN stack: $TUN_STACK"
     [ -n "$DETECTED_LAN" ] && settings_part="$settings_part, Detected LAN: $DETECTED_LAN"
     [ -n "$DETECTED_WAN" ] && settings_part="$settings_part, Detected WAN: $DETECTED_WAN"
@@ -1198,6 +1205,229 @@ get_excluded_interfaces() {
 
     # Return a clean, unique, newline-separated list
     echo "$combined_list" | tr ' ' '\n' | grep -v '^$' | sort -u
+}
+
+# Function to detect the interface used for the IPv6 default route.
+get_wan6_interface() {
+    local wan6_interface=""
+
+    wan6_interface=$(ip -6 route show default 2>/dev/null | awk '/default/ {print $5; exit}')
+
+    if [ -z "$wan6_interface" ] && command -v uci >/dev/null 2>&1; then
+        wan6_interface=$(uci get network.wan6.device 2>/dev/null || uci get network.wan6.ifname 2>/dev/null)
+    fi
+
+    if [ -n "$wan6_interface" ]; then
+        msg "WAN6 interface detected: $wan6_interface"
+    fi
+
+    echo "$wan6_interface"
+}
+
+# Internet-only guard: interfaces considered external for fail-closed blocking.
+get_guard_wan_interfaces() {
+    local detected_list=""
+    local user_selected_list=""
+    local wan4=""
+    local wan6=""
+
+    [ -n "$DETECTED_WAN" ] && [ -d "/sys/class/net/$DETECTED_WAN" ] && detected_list="$detected_list $DETECTED_WAN"
+
+    wan4=$(get_wan_interface)
+    [ -n "$wan4" ] && detected_list="$detected_list $wan4"
+
+    wan6=$(get_wan6_interface)
+    [ -n "$wan6" ] && detected_list="$detected_list $wan6"
+
+    if [ -n "$EXCLUDED_INTERFACES" ]; then
+        user_selected_list=$(echo "$EXCLUDED_INTERFACES" | tr ',' ' ' | tr -s ' ' | xargs)
+    fi
+
+    echo "$detected_list $user_selected_list" | tr ' ' '\n' | grep -v '^$' | sort -u
+}
+
+format_nft_elements() {
+    tr '\n' ',' | sed 's/,$//'
+}
+
+remove_nft_guard_rules() {
+    nft delete table inet "$GUARD_NFT_TABLE" 2>/dev/null
+}
+
+apply_nft_guard_rules() {
+    local wan_interfaces
+    local local4_elements
+    local local6_elements
+
+    wan_interfaces=$(get_guard_wan_interfaces)
+
+    remove_nft_guard_rules
+    nft add table inet "$GUARD_NFT_TABLE" || return 1
+    nft add set inet "$GUARD_NFT_TABLE" local4 '{ type ipv4_addr; flags interval; auto-merge; }' || return 1
+    nft add set inet "$GUARD_NFT_TABLE" local6 '{ type ipv6_addr; flags interval; auto-merge; }' || return 1
+
+    local4_elements=$(printf '%s\n' $RESERVED_NETWORKS | format_nft_elements)
+    local6_elements=$(printf '%s\n' $RESERVED_NETWORKS6 | format_nft_elements)
+    [ -n "$local4_elements" ] && nft add element inet "$GUARD_NFT_TABLE" local4 "{ $local4_elements }"
+    [ -n "$local6_elements" ] && nft add element inet "$GUARD_NFT_TABLE" local6 "{ $local6_elements }"
+
+    nft add chain inet "$GUARD_NFT_TABLE" forward '{ type filter hook forward priority 1; policy accept; }' || return 1
+    nft add chain inet "$GUARD_NFT_TABLE" output '{ type filter hook output priority 1; policy accept; }' || return 1
+
+    nft add rule inet "$GUARD_NFT_TABLE" forward ct state established,related accept
+    nft add rule inet "$GUARD_NFT_TABLE" forward iifname "clash-tun" accept
+    nft add rule inet "$GUARD_NFT_TABLE" forward oifname "clash-tun" accept
+    nft add rule inet "$GUARD_NFT_TABLE" forward ct status dnat accept
+    nft add rule inet "$GUARD_NFT_TABLE" forward udp sport 67 udp dport 68 accept
+    nft add rule inet "$GUARD_NFT_TABLE" forward udp sport 68 udp dport 67 accept
+    nft add rule inet "$GUARD_NFT_TABLE" forward ip daddr @local4 accept
+    nft add rule inet "$GUARD_NFT_TABLE" forward ip6 daddr @local6 accept
+
+    nft add rule inet "$GUARD_NFT_TABLE" output ct state established,related accept
+    nft add rule inet "$GUARD_NFT_TABLE" output oifname "lo" accept
+    nft add rule inet "$GUARD_NFT_TABLE" output meta mark "$MARK_CLASH_ROUTING" accept
+    nft add rule inet "$GUARD_NFT_TABLE" output meta mark "$MARK_TPROXY" accept
+    nft add rule inet "$GUARD_NFT_TABLE" output meta mark "$MARK_TUN_UDP" accept
+    nft add rule inet "$GUARD_NFT_TABLE" output ip daddr @local4 accept
+    nft add rule inet "$GUARD_NFT_TABLE" output ip6 daddr @local6 accept
+
+    if [ -n "$wan_interfaces" ]; then
+        msg "Internet-only guard external interfaces: $(echo "$wan_interfaces" | tr '\n' ' ')"
+        echo "$wan_interfaces" | while IFS= read -r iface; do
+            [ -n "$iface" ] || continue
+            nft add rule inet "$GUARD_NFT_TABLE" forward oifname "$iface" drop comment "miclash-guard"
+            nft add rule inet "$GUARD_NFT_TABLE" output oifname "$iface" drop comment "miclash-guard"
+        done
+    else
+        warn "Internet-only guard could not detect WAN interfaces; falling back to blocking all non-local forwarding/output"
+        nft add rule inet "$GUARD_NFT_TABLE" forward meta nfproto ipv4 drop comment "miclash-guard"
+        nft add rule inet "$GUARD_NFT_TABLE" forward meta nfproto ipv6 drop comment "miclash-guard"
+        nft add rule inet "$GUARD_NFT_TABLE" output meta nfproto ipv4 drop comment "miclash-guard"
+        nft add rule inet "$GUARD_NFT_TABLE" output meta nfproto ipv6 drop comment "miclash-guard"
+    fi
+
+    msg "Internet-only guard enabled (nftables)"
+}
+
+remove_iptables_guard_for_cmd() {
+    local cmd="$1"
+
+    command -v "$cmd" >/dev/null 2>&1 || return 0
+
+    while $cmd -t filter -D FORWARD -j "$GUARD_FORWARD_CHAIN" 2>/dev/null; do :; done
+    while $cmd -t filter -D OUTPUT -j "$GUARD_OUTPUT_CHAIN" 2>/dev/null; do :; done
+    $cmd -t filter -F "$GUARD_FORWARD_CHAIN" 2>/dev/null
+    $cmd -t filter -X "$GUARD_FORWARD_CHAIN" 2>/dev/null
+    $cmd -t filter -F "$GUARD_OUTPUT_CHAIN" 2>/dev/null
+    $cmd -t filter -X "$GUARD_OUTPUT_CHAIN" 2>/dev/null
+}
+
+ensure_iptables_guard_chain() {
+    local cmd="$1"
+    local base_chain="$2"
+    local guard_chain="$3"
+
+    $cmd -t filter -N "$guard_chain" 2>/dev/null
+    $cmd -t filter -F "$guard_chain" 2>/dev/null
+    while $cmd -t filter -D "$base_chain" -j "$guard_chain" 2>/dev/null; do :; done
+    $cmd -t filter -I "$base_chain" 1 -j "$guard_chain"
+}
+
+apply_iptables_guard_for_cmd() {
+    local cmd="$1"
+    local family="$2"
+    local wan_interfaces="$3"
+    local reserved_networks="$4"
+
+    command -v "$cmd" >/dev/null 2>&1 || return 0
+
+    remove_iptables_guard_for_cmd "$cmd"
+    ensure_iptables_guard_chain "$cmd" FORWARD "$GUARD_FORWARD_CHAIN" || return 1
+    ensure_iptables_guard_chain "$cmd" OUTPUT "$GUARD_OUTPUT_CHAIN" || return 1
+
+    $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -i clash-tun -j RETURN
+    $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -o clash-tun -j RETURN
+    [ "$family" = "ipv4" ] && $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -m conntrack --ctstate DNAT -j RETURN 2>/dev/null
+    $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -p udp --sport 67 --dport 68 -j RETURN 2>/dev/null
+    $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -p udp --sport 68 --dport 67 -j RETURN 2>/dev/null
+
+    for network in $reserved_networks; do
+        $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -d "$network" -j RETURN 2>/dev/null
+    done
+
+    $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -o lo -j RETURN
+    $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -m mark --mark "$MARK_CLASH_ROUTING" -j RETURN
+    $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -m mark --mark "$MARK_TPROXY" -j RETURN
+    $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -m mark --mark "$MARK_TUN_UDP" -j RETURN
+
+    for network in $reserved_networks; do
+        $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -d "$network" -j RETURN 2>/dev/null
+    done
+
+    if [ -n "$wan_interfaces" ]; then
+        echo "$wan_interfaces" | while IFS= read -r iface; do
+            [ -n "$iface" ] || continue
+            $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -o "$iface" -j DROP
+            $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -o "$iface" -j DROP
+        done
+    else
+        $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -j DROP
+        $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -j DROP
+    fi
+
+    $cmd -t filter -A "$GUARD_FORWARD_CHAIN" -j RETURN
+    $cmd -t filter -A "$GUARD_OUTPUT_CHAIN" -j RETURN
+}
+
+remove_iptables_guard_rules() {
+    remove_iptables_guard_for_cmd iptables
+    remove_iptables_guard_for_cmd ip6tables
+}
+
+apply_iptables_guard_rules() {
+    local wan_interfaces
+
+    wan_interfaces=$(get_guard_wan_interfaces)
+    [ -n "$wan_interfaces" ] && msg "Internet-only guard external interfaces: $(echo "$wan_interfaces" | tr '\n' ' ')" || \
+        warn "Internet-only guard could not detect WAN interfaces; falling back to blocking all non-local forwarding/output"
+
+    apply_iptables_guard_for_cmd iptables ipv4 "$wan_interfaces" "$RESERVED_NETWORKS" || return 1
+
+    if command -v ip6tables >/dev/null 2>&1; then
+        apply_iptables_guard_for_cmd ip6tables ipv6 "$wan_interfaces" "$RESERVED_NETWORKS6" || return 1
+    else
+        warn "ip6tables not found; IPv6 guard rules cannot be installed on the iptables backend"
+    fi
+
+    msg "Internet-only guard enabled (iptables)"
+}
+
+apply_guard_rules() {
+    if hash nft 2>/dev/null; then
+        apply_nft_guard_rules
+    elif hash iptables 2>/dev/null; then
+        apply_iptables_guard_rules
+    else
+        msg "ERROR: Neither nftables nor iptables found for internet-only guard"
+        return 1
+    fi
+}
+
+remove_guard_rules() {
+    remove_nft_guard_rules
+    remove_iptables_guard_rules
+    msg "Internet-only guard disabled"
+}
+
+refresh_guard_rules() {
+    load_all_settings_once
+    if [ "$INTERNET_ONLY_MICLASH" = "true" ]; then
+        apply_guard_rules
+    else
+        remove_guard_rules
+    fi
 }
 
 # For nftables - apply interface exclusion rules in mangle chain
@@ -2415,6 +2645,15 @@ start() {
     load_all_settings_once
     preflight_check_tun_stack
 
+    if [ "$INTERNET_ONLY_MICLASH" = "true" ]; then
+        apply_guard_rules || {
+            msg "ERROR: Failed to apply internet-only guard"
+            return 1
+        }
+    else
+        remove_guard_rules
+    fi
+
     local server_ips fake_ip_config fake_ip_range fake_ip_filter_mode
     server_ips=$(extract_server_ips)
     fake_ip_config=$(extract_fake_ip_config)
@@ -2555,6 +2794,12 @@ stop() {
         return 1
     fi
 
+    if [ "$INTERNET_ONLY_MICLASH" = "true" ]; then
+        apply_guard_rules || warn "Failed to refresh internet-only guard during stop"
+    else
+        remove_guard_rules
+    fi
+
     # Remove the fw4 include hook registered in start().  Delete the UCI entry
     # first so that a concurrent fw4 reload does not try to run a missing file.
     uci -q delete firewall.miclash 2>/dev/null; uci -q commit firewall 2>/dev/null
@@ -2586,6 +2831,25 @@ case "$1" in
         ;;
     update-ip-whitelist)
         update_fakeip_whitelist_sets
+        ;;
+    guard_start)
+        load_all_settings_once
+        apply_guard_rules
+        ;;
+    guard_stop)
+        remove_guard_rules
+        ;;
+    guard_refresh)
+        load_all_settings_once
+        if [ "$INTERNET_ONLY_MICLASH" = "true" ]; then
+            apply_guard_rules
+        else
+            remove_guard_rules
+        fi
+        ;;
+    full_cleanup)
+        stop
+        remove_guard_rules
         ;;
     tun_route_setup)
         tun_route_setup
@@ -2633,7 +2897,7 @@ case "$1" in
         exit $?
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|update|update-ip-whitelist|tun_route_setup|tun_route_watch|validate_policy|repair_policy|validate_forward|repair_forward_rules}"
+        echo "Usage: $0 {start|stop|restart|update|update-ip-whitelist|guard_start|guard_stop|guard_refresh|full_cleanup|tun_route_setup|tun_route_watch|validate_policy|repair_policy|validate_forward|repair_forward_rules}"
         exit 1
         ;;
 esac

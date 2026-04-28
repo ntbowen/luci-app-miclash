@@ -1070,3 +1070,9 @@ msgstr "VPN / Туннель"
 
 msgid "YAML validation failed."
 msgstr "Проверка YAML завершилась ошибкой."
+
+msgid "Internet only through MiClash"
+msgstr "Интернет только через MiClash"
+
+msgid "Blocks direct external traffic from clients. If MiClash is stopped or fails, the internet is blocked while local network access remains available."
+msgstr "Блокирует прямой внешний трафик от клиентов. Если MiClash остановлен или упал, интернет блокируется, а доступ к локальной сети остаётся доступным."
