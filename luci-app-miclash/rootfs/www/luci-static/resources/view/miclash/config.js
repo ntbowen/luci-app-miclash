@@ -1728,6 +1728,7 @@ async function loadOperationalSettings() {
 			autoDetectLan: true,
 			autoDetectWan: true,
 			blockQuic: true,
+			internetOnlyMiclash: false,
 			useTmpfsRules: true,
 			detectedLan: '',
 			detectedWan: '',
@@ -1751,6 +1752,7 @@ async function loadOperationalSettings() {
 				case 'AUTO_DETECT_LAN': settings.autoDetectLan = value === 'true'; break;
 				case 'AUTO_DETECT_WAN': settings.autoDetectWan = value === 'true'; break;
 				case 'BLOCK_QUIC': settings.blockQuic = value === 'true'; break;
+				case 'INTERNET_ONLY_MICLASH': settings.internetOnlyMiclash = value === 'true'; break;
 				case 'USE_TMPFS_RULES': settings.useTmpfsRules = value === 'true'; break;
 				case 'DETECTED_LAN': settings.detectedLan = value; break;
 				case 'DETECTED_WAN': settings.detectedWan = value; break;
@@ -1775,6 +1777,7 @@ async function loadOperationalSettings() {
 			autoDetectLan: true,
 			autoDetectWan: true,
 			blockQuic: true,
+			internetOnlyMiclash: false,
 			useTmpfsRules: true,
 			detectedLan: '',
 			detectedWan: '',
@@ -1865,7 +1868,7 @@ async function detectWanInterface() {
 	}
 }
 
-async function saveOperationalSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetectWan, blockQuic, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS, options) {
+async function saveOperationalSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetectWan, blockQuic, internetOnlyMiclash, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS, options) {
 	const opts = options || {};
 	try {
 		let detectedLan = '';
@@ -1891,6 +1894,7 @@ async function saveOperationalSettings(mode, proxyMode, tunStack, autoDetectLan,
 			'AUTO_DETECT_LAN=' + autoDetectLan,
 			'AUTO_DETECT_WAN=' + autoDetectWan,
 			'BLOCK_QUIC=' + blockQuic,
+			'INTERNET_ONLY_MICLASH=' + internetOnlyMiclash,
 			'USE_TMPFS_RULES=' + useTmpfsRules,
 			'DETECTED_LAN=' + detectedLan,
 			'DETECTED_WAN=' + detectedWan,
@@ -1954,6 +1958,7 @@ async function switchProxyModeFromHeader(targetMode) {
 		!!current.autoDetectLan,
 		!!current.autoDetectWan,
 		!!current.blockQuic,
+		!!current.internetOnlyMiclash,
 		!!current.useTmpfsRules,
 		interfaces,
 		!!current.enableHwid,
@@ -2586,6 +2591,7 @@ function buildSettingsPaneHtml() {
 		autoDetectLan: true,
 		autoDetectWan: true,
 		blockQuic: true,
+		internetOnlyMiclash: false,
 		useTmpfsRules: true,
 		enableHwid: false,
 		hwidUserAgent: 'MiClash',
@@ -2654,6 +2660,10 @@ function buildSettingsPaneHtml() {
 						'<input type="checkbox" id="sbox-block-quic"' + (s.blockQuic ? ' checked' : '') + ' />' +
 						'<span>' + safeText(_('Block QUIC (UDP/443)')) + '</span>' +
 					'</label>' +
+				'<label class="sbox-checkbox-row">' +
+					'<input type="checkbox" id="sbox-internet-only-miclash"' + (s.internetOnlyMiclash ? ' checked' : '') + ' />' +
+					'<span>' + safeText(_('Internet only through MiClash')) + '</span>' +
+				'</label>' +
 				'<label class="sbox-checkbox-row">' +
 					'<input type="checkbox" id="sbox-tmpfs"' + (s.useTmpfsRules ? ' checked' : '') + ' />' +
 					'<span>' + safeText(_('Store rules/providers on tmpfs')) + '</span>' +
@@ -2901,6 +2911,7 @@ async function collectSettingsFormState() {
 	const autoDetectLan = !!pane.querySelector('#sbox-auto-lan')?.checked;
 	const autoDetectWan = !!pane.querySelector('#sbox-auto-wan')?.checked;
 	const blockQuic = !!pane.querySelector('#sbox-block-quic')?.checked;
+	const internetOnlyMiclash = !!pane.querySelector('#sbox-internet-only-miclash')?.checked;
 	const useTmpfsRules = !!pane.querySelector('#sbox-tmpfs')?.checked;
 	const enableHwid = !!pane.querySelector('#sbox-enable-hwid')?.checked;
 	const hwidUserAgent = String(pane.querySelector('#sbox-hwid-user-agent')?.value || 'MiClash').trim() || 'MiClash';
@@ -2918,6 +2929,7 @@ async function collectSettingsFormState() {
 		autoDetectLan,
 		autoDetectWan,
 		blockQuic,
+		internetOnlyMiclash,
 		useTmpfsRules,
 		selected,
 		enableHwid,
@@ -2951,13 +2963,14 @@ function bindSettingsPaneEvents() {
 				formState.autoDetectLan,
 				formState.autoDetectWan,
 				formState.blockQuic,
-					formState.useTmpfsRules,
-					formState.selected,
-					formState.enableHwid,
-					formState.hwidUserAgent,
-					formState.hwidDeviceOS,
-					{ silent: true }
-				);
+				formState.internetOnlyMiclash,
+				formState.useTmpfsRules,
+				formState.selected,
+				formState.enableHwid,
+				formState.hwidUserAgent,
+				formState.hwidDeviceOS,
+				{ silent: true }
+			);
 
 				if (!ok) return;
 				try {
