@@ -74,8 +74,13 @@ const appState = {
 
 function notify(type, message) {
 	const node = ui.addNotification(null, E('p', String(message || '')), type);
-	const timeout = type === 'error' ? 10000 : 6000;
-	if (node) {
+	// "Auto-hide notifications" defaults to true; the toast disappears after a
+	// short timeout (longer for errors so the user has time to read them).
+	// When the user turns the option off, the toast stays until they close it
+	// manually — useful for diagnosing rare issues without losing the message.
+	const autoHide = !appState.settings || appState.settings.autoHideNotifications !== false;
+	if (node && autoHide) {
+		const timeout = type === 'error' ? 10000 : 6000;
 		setTimeout(() => {
 			try {
 				node.remove();
@@ -300,11 +305,17 @@ function parsePackageVersion(raw, packageName) {
 	if (!text) return '';
 
 	const escaped = String(packageName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	// All patterns must reference the package name. The earlier fallback
+	// "(\\d+\\.\\d+\\.\\d+...)" without the package name was too greedy: when
+	// opkg/apk emitted unrelated lines (kernel banners, errors from
+	// `opkg update`, mentions of other packages) the regex would latch onto
+	// the first version-like token in the output (e.g. the Linux kernel
+	// "6.6.93") and the UI would show "MiClash 6.6.93" until the page was
+	// refreshed enough times for the request to come back clean.
 	const patterns = [
 		new RegExp('^\\s*Version\\s*:\\s*([^\\s]+)', 'im'),
 		new RegExp(escaped + '\\s*-\\s*([^\\s]+)', 'i'),
-		new RegExp(escaped + '-([\\w.+~:-]+)', 'i'),
-		new RegExp('(\\d+\\.\\d+\\.\\d+(?:[-+][\\w.-]+)?)', 'i')
+		new RegExp(escaped + '-([\\w.+~:-]+)', 'i')
 	];
 
 	for (let i = 0; i < patterns.length; i++) {
@@ -703,6 +714,10 @@ async function installMiClashDependencies(manager) {
 }
 
 async function installMiClashFromSettings(actionKind) {
+	if (isUpdateBlockedByGuard()) {
+		throw new Error(guardBlockedNetworkMessage());
+	}
+
 	const manager = await detectPackageManager();
 	if (!manager) throw new Error(_('No supported package manager found (apk/opkg).'));
 
@@ -795,6 +810,10 @@ async function downloadMihomoKernel(downloadUrl, version, arch) {
 }
 
 async function installKernelFromSettings() {
+	if (isUpdateBlockedByGuard()) {
+		throw new Error(guardBlockedNetworkMessage());
+	}
+
 	const arch = await detectSystemArchitecture();
 	const release = await getLatestMihomoRelease();
 	const asset = findKernelAsset(release, arch);
@@ -1327,6 +1346,10 @@ async function testConfigContent(content, keepOnSuccess, targetPath) {
 }
 
 async function fetchSubscriptionAsYaml(url, targetPath) {
+	if (isUpdateBlockedByGuard()) {
+		throw new Error(guardBlockedNetworkMessage());
+	}
+
 	const settingsMap = await readSettingsMap();
 	const versions = await getVersions();
 	const profile = buildSubscriptionClientProfile(settingsMap, versions.app);
@@ -1730,6 +1753,7 @@ async function loadOperationalSettings() {
 			blockQuic: true,
 			internetOnlyMiclash: false,
 			useTmpfsRules: true,
+			autoHideNotifications: true,
 			detectedLan: '',
 			detectedWan: '',
 			includedInterfaces: [],
@@ -1754,6 +1778,7 @@ async function loadOperationalSettings() {
 				case 'BLOCK_QUIC': settings.blockQuic = value === 'true'; break;
 				case 'INTERNET_ONLY_MICLASH': settings.internetOnlyMiclash = value === 'true'; break;
 				case 'USE_TMPFS_RULES': settings.useTmpfsRules = value === 'true'; break;
+				case 'AUTO_HIDE_NOTIFICATIONS': settings.autoHideNotifications = value !== 'false'; break;
 				case 'DETECTED_LAN': settings.detectedLan = value; break;
 				case 'DETECTED_WAN': settings.detectedWan = value; break;
 				case 'INCLUDED_INTERFACES':
@@ -1779,6 +1804,7 @@ async function loadOperationalSettings() {
 			blockQuic: true,
 			internetOnlyMiclash: false,
 			useTmpfsRules: true,
+			autoHideNotifications: true,
 			detectedLan: '',
 			detectedWan: '',
 			includedInterfaces: [],
@@ -1868,7 +1894,7 @@ async function detectWanInterface() {
 	}
 }
 
-async function saveOperationalSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetectWan, blockQuic, internetOnlyMiclash, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS, options) {
+async function saveOperationalSettings(mode, proxyMode, tunStack, autoDetectLan, autoDetectWan, blockQuic, internetOnlyMiclash, useTmpfsRules, interfaces, enableHwid, hwidUserAgent, hwidDeviceOS, autoHideNotifications, options) {
 	const opts = options || {};
 	try {
 		let detectedLan = '';
@@ -1896,6 +1922,7 @@ async function saveOperationalSettings(mode, proxyMode, tunStack, autoDetectLan,
 			'BLOCK_QUIC=' + blockQuic,
 			'INTERNET_ONLY_MICLASH=' + internetOnlyMiclash,
 			'USE_TMPFS_RULES=' + useTmpfsRules,
+			'AUTO_HIDE_NOTIFICATIONS=' + (autoHideNotifications !== false),
 			'DETECTED_LAN=' + detectedLan,
 			'DETECTED_WAN=' + detectedWan,
 			'INCLUDED_INTERFACES=' + includedInterfaces.join(','),
@@ -1964,6 +1991,7 @@ async function switchProxyModeFromHeader(targetMode) {
 		!!current.enableHwid,
 		current.hwidUserAgent || 'MiClash',
 		current.hwidDeviceOS || 'OpenWrt',
+		current.autoHideNotifications !== false,
 		{ silent: true }
 	);
 
@@ -2593,6 +2621,7 @@ function buildSettingsPaneHtml() {
 		blockQuic: true,
 		internetOnlyMiclash: false,
 		useTmpfsRules: true,
+		autoHideNotifications: true,
 		enableHwid: false,
 		hwidUserAgent: 'MiClash',
 		hwidDeviceOS: 'OpenWrt'
@@ -2669,6 +2698,10 @@ function buildSettingsPaneHtml() {
 					'<span>' + safeText(_('Store rules/providers on tmpfs')) + '</span>' +
 				'</label>' +
 				'<label class="sbox-checkbox-row">' +
+					'<input type="checkbox" id="sbox-auto-hide-notifications"' + (s.autoHideNotifications !== false ? ' checked' : '') + ' />' +
+					'<span>' + safeText(_('Auto-hide notifications')) + '</span>' +
+				'</label>' +
+				'<label class="sbox-checkbox-row">' +
 					'<input type="checkbox" id="sbox-enable-hwid"' + (s.enableHwid ? ' checked' : '') + ' />' +
 					'<span>' + safeText(_('Inject HWID headers into proxy-providers')) + '</span>' +
 				'</label>' +
@@ -2725,6 +2758,12 @@ function buildPageHtml() {
 				'<option value="tun"' + (appState.proxyMode === 'tun' ? ' selected' : '') + '>tun</option>' +
 				'<option value="mixed"' + (appState.proxyMode === 'mixed' ? ' selected' : '') + '>mixed</option>' +
 			'</select>' +
+			'<span class="sbox-header-dot">|</span>' +
+			'<span id="sbox-guard" class="sbox-guard-pill ' + (isInternetOnlyEnabled() ? 'sbox-guard-on' : 'sbox-guard-off') + '" title="' + safeText(_('Internet only through MiClash')) + '">' +
+				'<span class="sbox-guard-dot ' + (isInternetOnlyEnabled() ? 'sbox-dot-on' : 'sbox-dot-off') + '"></span>' +
+				'<span class="sbox-guard-label">' + safeText(_('Guard')) + '</span>' +
+				'<span id="sbox-guard-state" class="sbox-guard-state">' + safeText(isInternetOnlyEnabled() ? _('ON') : _('OFF')) + '</span>' +
+			'</span>' +
 			'<button id="sbox-theme-toggle" type="button" class="cbi-button cbi-button-neutral sbox-header-button sbox-theme-toggle" title="' + safeText(_('Switch theme')) + '">o</button>' +
 			'<button id="sbox-dashboard" type="button" class="cbi-button sbox-header-button sbox-btn-dashboard ' + (appState.serviceRunning ? 'sbox-btn-dashboard-on' : 'sbox-btn-dashboard-off') + '"' +
 				(appState.serviceRunning ? '' : ' disabled') +
@@ -2863,6 +2902,38 @@ function updateHeaderAndControlDom() {
 		kernelAction.setAttribute('aria-label', kernelActionState.title);
 	}
 	if (modeSelect) modeSelect.value = normalizeProxyMode(appState.proxyMode);
+
+	const guardPill = pageRoot.querySelector('#sbox-guard');
+	const guardState = pageRoot.querySelector('#sbox-guard-state');
+	const guardEnabled = isInternetOnlyEnabled();
+	if (guardPill) {
+		guardPill.classList.toggle('sbox-guard-on', guardEnabled);
+		guardPill.classList.toggle('sbox-guard-off', !guardEnabled);
+		const guardDot = guardPill.querySelector('.sbox-guard-dot');
+		if (guardDot) {
+			guardDot.classList.toggle('sbox-dot-on', guardEnabled);
+			guardDot.classList.toggle('sbox-dot-off', !guardEnabled);
+		}
+	}
+	if (guardState) guardState.textContent = guardEnabled ? _('ON') : _('OFF');
+}
+
+function isInternetOnlyEnabled() {
+	return !!(appState.settings && appState.settings.internetOnlyMiclash);
+}
+
+// Returns an Error to throw / a string to display when the user clicked an
+// "Update" button while the service is stopped but the "Internet only through
+// MiClash" guard is still active. In that combination all WAN-bound traffic
+// from the router is dropped at the firewall (no proxy is running to carry it),
+// so the request is guaranteed to fail. We surface a concrete instruction
+// instead of letting curl/XHR run into a generic timeout / DNS failure.
+function guardBlockedNetworkMessage() {
+	return _('Network access is blocked by "Internet only through MiClash". Start the service or disable this option in Settings to update.');
+}
+
+function isUpdateBlockedByGuard() {
+	return !appState.serviceRunning && isInternetOnlyEnabled();
 }
 
 async function refreshHeaderAndControl() {
@@ -2913,6 +2984,8 @@ async function collectSettingsFormState() {
 	const blockQuic = !!pane.querySelector('#sbox-block-quic')?.checked;
 	const internetOnlyMiclash = !!pane.querySelector('#sbox-internet-only-miclash')?.checked;
 	const useTmpfsRules = !!pane.querySelector('#sbox-tmpfs')?.checked;
+	const autoHideNotificationsEl = pane.querySelector('#sbox-auto-hide-notifications');
+	const autoHideNotifications = autoHideNotificationsEl ? !!autoHideNotificationsEl.checked : true;
 	const enableHwid = !!pane.querySelector('#sbox-enable-hwid')?.checked;
 	const hwidUserAgent = String(pane.querySelector('#sbox-hwid-user-agent')?.value || 'MiClash').trim() || 'MiClash';
 	const hwidDeviceOS = String(pane.querySelector('#sbox-hwid-device-os')?.value || 'OpenWrt').trim() || 'OpenWrt';
@@ -2931,6 +3004,7 @@ async function collectSettingsFormState() {
 		blockQuic,
 		internetOnlyMiclash,
 		useTmpfsRules,
+		autoHideNotifications,
 		selected,
 		enableHwid,
 		hwidUserAgent,
@@ -2969,6 +3043,7 @@ function bindSettingsPaneEvents() {
 				formState.enableHwid,
 				formState.hwidUserAgent,
 				formState.hwidDeviceOS,
+				formState.autoHideNotifications,
 				{ silent: true }
 			);
 
@@ -3679,6 +3754,41 @@ const PAGE_CSS = `
 	text-transform: uppercase;
 	letter-spacing: 0.06em;
 }
+.sbox-guard-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	border: 1px solid transparent;
+	font-size: 11px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	cursor: help;
+}
+.sbox-guard-on {
+	background: rgba(46, 204, 113, 0.12);
+	border-color: rgba(46, 204, 113, 0.4);
+	color: #63d996;
+}
+.sbox-guard-off {
+	background: rgba(120, 120, 120, 0.12);
+	border-color: rgba(120, 120, 120, 0.35);
+	color: var(--sbox-muted);
+}
+.sbox-guard-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.sbox-guard-label {
+	letter-spacing: 0.08em;
+}
+.sbox-guard-state {
+	font-weight: 800;
+}
 .sbox-mode-select {
 	min-width: 96px;
 	height: 24px;
@@ -3963,184 +4073,4 @@ const PAGE_CSS = `
 }
 .sbox-ruleset-list-item.active {
 	border-color: var(--sbox-accent);
-	background: rgba(92, 112, 136, 0.2);
-}
-.sbox-rulesets-toolbar {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	margin-bottom: 8px;
-}
-.sbox-ruleset-current {
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-	font-size: 12px;
-	color: var(--sbox-muted);
-}
-.sbox-rulesets-toolbar-actions {
-	margin-left: auto;
-	display: flex;
-	gap: 8px;
-}
-.sbox-ruleset-editor-wrap {
-	display: none;
-}
-.sbox-ruleset-editor {
-	height: 48vh;
-	min-height: 320px;
-	border: 1px solid var(--sbox-border);
-	border-radius: 8px;
-}
-.sbox-rulesets-empty {
-	border: 1px dashed var(--sbox-border);
-	border-radius: 8px;
-	padding: 16px;
-	color: var(--sbox-muted);
-	font-size: 12px;
-}
-.sbox-rulesets-example {
-	margin-top: 8px;
-}
-.sbox-rulesets-example pre {
-	margin: 0;
-	border: 1px solid var(--sbox-border);
-	border-radius: 6px;
-	padding: 8px;
-	background: var(--sbox-log-bg);
-	font-size: 11px;
-	line-height: 1.45;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-}
-.sbox-rulesets-whitelist {
-	margin-top: 10px;
-	border: 1px solid rgba(46, 204, 113, 0.35);
-	border-radius: 8px;
-	padding: 10px;
-	background: rgba(46, 204, 113, 0.06);
-}
-.sbox-rulesets-whitelist-head {
-	font-size: 13px;
-	font-weight: 700;
-	margin-bottom: 4px;
-}
-.sbox-ruleset-whitelist-editor {
-	height: 240px;
-	border: 1px solid var(--sbox-border);
-	border-radius: 8px;
-}
-.sbox-page.sbox-theme-light .sbox-ruleset-list-item {
-	background: #f3f6fb;
-}
-.sbox-page.sbox-theme-light .sbox-ruleset-list-item.active {
-	background: #dde9ff;
-}
-.sbox-page.sbox-theme-light .sbox-rulesets-whitelist {
-	background: #eefbf3;
-}
-@media (max-width: 980px) {
-	.sbox-config-toolbar {
-		grid-template-columns: 1fr;
-	}
-	.sbox-settings-grid {
-		grid-template-columns: 1fr;
-	}
-	.sbox-form-grid {
-		grid-template-columns: 1fr;
-	}
-	.sbox-modal-wide {
-		width: min(98vw, 980px);
-	}
-	.sbox-rulesets-layout {
-		grid-template-columns: 1fr;
-	}
-	.sbox-rulesets-list {
-		max-height: 220px;
-	}
-	.sbox-ruleset-editor {
-		height: 42vh;
-		min-height: 280px;
-	}
-}
-`;
-
-return view.extend({
-	handleSave: null,
-	handleSaveApply: null,
-	handleReset: null,
-
-	load: function() {
-		return Promise.all([
-			L.resolveDefault(fs.read(CONFIG_PATH), ''),
-			readSubscriptionUrl(),
-			readThemePreference(),
-			loadOperationalSettings(),
-			getNetworkInterfaces(),
-			getVersions(),
-			getMihomoStatus(),
-			getServiceStatus(),
-			detectCurrentProxyMode()
-		]);
-	},
-
-	render: async function(data) {
-		await ensureConfigProfilesReady(data[0] || '');
-		appState.configProfiles = CONFIG_PROFILES.slice();
-		appState.selectedConfigName = MAIN_CONFIG_NAME;
-		appState.configContent = await readConfigFileByName(MAIN_CONFIG_NAME);
-		appState.subscriptionUrl = await readSubscriptionUrl(MAIN_CONFIG_NAME);
-		const savedTheme = String(data[2] || '').trim();
-		appState.uiTheme = savedTheme ? normalizeTheme(savedTheme) : detectInitialTheme();
-		appState.settings = data[3] || await loadOperationalSettings();
-		appState.interfaces = data[4] || [];
-		appState.versions = data[5] || { app: 'unknown', clash: 'unknown' };
-		appState.kernelStatus = data[6] || { installed: false, version: null };
-		appState.serviceRunning = !!data[7];
-		appState.proxyMode = data[8] || 'tproxy';
-
-		appState.selectedInterfaces = await loadInterfacesByMode(appState.settings.mode || 'exclude');
-		appState.detectedLan = appState.settings.detectedLan || (await detectLanBridge()) || '';
-		appState.detectedWan = appState.settings.detectedWan || (await detectWanInterface()) || '';
-
-		pageRoot = E('div', { 'class': 'sbox-page' }, [
-			E('style', {}, PAGE_CSS),
-			E('div', { 'id': 'sbox-root' })
-		]);
-
-		pageRoot.querySelector('#sbox-root').innerHTML = buildPageHtml();
-		applyUiTheme(appState.uiTheme);
-		if (!savedTheme) {
-			saveThemePreference(appState.uiTheme).catch(() => {});
-		}
-
-		try {
-			await initializeAceEditor(appState.configContent);
-		} catch (e) {
-			notify('error', _('Failed to initialize editor: %s').format(e.message));
-		}
-
-		bindControlAndHeaderEvents();
-		bindConfigEvents();
-		bindTabEvents();
-		renderSettingsPane();
-		updateHeaderAndControlDom();
-		refreshReleaseMeta({ force: true }).catch(() => {});
-
-		startControlPolling();
-		startUpdatePolling();
-
-		document.addEventListener('visibilitychange', () => {
-			if (document.hidden) {
-				stopLogPolling();
-			} else if (appState.activeCfgTab === 'logs') {
-				refreshLogs().catch(() => {});
-				startLogPolling();
-			}
-			if (!document.hidden) {
-				refreshReleaseMeta({ force: false }).catch(() => {});
-			}
-		});
-
-		return pageRoot;
-	}
-});
-
-
+	background: rgba(
