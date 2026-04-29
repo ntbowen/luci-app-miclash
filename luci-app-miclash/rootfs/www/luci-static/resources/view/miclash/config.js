@@ -4073,4 +4073,182 @@ const PAGE_CSS = `
 }
 .sbox-ruleset-list-item.active {
 	border-color: var(--sbox-accent);
-	background: rgba(
+	background: rgba(92, 112, 136, 0.2);
+}
+.sbox-rulesets-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+.sbox-ruleset-current {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+	font-size: 12px;
+	color: var(--sbox-muted);
+}
+.sbox-rulesets-toolbar-actions {
+	margin-left: auto;
+	display: flex;
+	gap: 8px;
+}
+.sbox-ruleset-editor-wrap {
+	display: none;
+}
+.sbox-ruleset-editor {
+	height: 48vh;
+	min-height: 320px;
+	border: 1px solid var(--sbox-border);
+	border-radius: 8px;
+}
+.sbox-rulesets-empty {
+	border: 1px dashed var(--sbox-border);
+	border-radius: 8px;
+	padding: 16px;
+	color: var(--sbox-muted);
+	font-size: 12px;
+}
+.sbox-rulesets-example {
+	margin-top: 8px;
+}
+.sbox-rulesets-example pre {
+	margin: 0;
+	border: 1px solid var(--sbox-border);
+	border-radius: 6px;
+	padding: 8px;
+	background: var(--sbox-log-bg);
+	font-size: 11px;
+	line-height: 1.45;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+.sbox-rulesets-whitelist {
+	margin-top: 10px;
+	border: 1px solid rgba(46, 204, 113, 0.35);
+	border-radius: 8px;
+	padding: 10px;
+	background: rgba(46, 204, 113, 0.06);
+}
+.sbox-rulesets-whitelist-head {
+	font-size: 13px;
+	font-weight: 700;
+	margin-bottom: 4px;
+}
+.sbox-ruleset-whitelist-editor {
+	height: 240px;
+	border: 1px solid var(--sbox-border);
+	border-radius: 8px;
+}
+.sbox-page.sbox-theme-light .sbox-ruleset-list-item {
+	background: #f3f6fb;
+}
+.sbox-page.sbox-theme-light .sbox-ruleset-list-item.active {
+	background: #dde9ff;
+}
+.sbox-page.sbox-theme-light .sbox-rulesets-whitelist {
+	background: #eefbf3;
+}
+@media (max-width: 980px) {
+	.sbox-config-toolbar {
+		grid-template-columns: 1fr;
+	}
+	.sbox-settings-grid {
+		grid-template-columns: 1fr;
+	}
+	.sbox-form-grid {
+		grid-template-columns: 1fr;
+	}
+	.sbox-modal-wide {
+		width: min(98vw, 980px);
+	}
+	.sbox-rulesets-layout {
+		grid-template-columns: 1fr;
+	}
+	.sbox-rulesets-list {
+		max-height: 220px;
+	}
+	.sbox-ruleset-editor {
+		height: 42vh;
+		min-height: 280px;
+	}
+}
+`;
+
+return view.extend({
+	handleSave: null,
+	handleSaveApply: null,
+	handleReset: null,
+
+	load: function() {
+		return Promise.all([
+			L.resolveDefault(fs.read(CONFIG_PATH), ''),
+			readSubscriptionUrl(),
+			readThemePreference(),
+			loadOperationalSettings(),
+			getNetworkInterfaces(),
+			getVersions(),
+			getMihomoStatus(),
+			getServiceStatus(),
+			detectCurrentProxyMode()
+		]);
+	},
+
+	render: async function(data) {
+		await ensureConfigProfilesReady(data[0] || '');
+		appState.configProfiles = CONFIG_PROFILES.slice();
+		appState.selectedConfigName = MAIN_CONFIG_NAME;
+		appState.configContent = await readConfigFileByName(MAIN_CONFIG_NAME);
+		appState.subscriptionUrl = await readSubscriptionUrl(MAIN_CONFIG_NAME);
+		const savedTheme = String(data[2] || '').trim();
+		appState.uiTheme = savedTheme ? normalizeTheme(savedTheme) : detectInitialTheme();
+		appState.settings = data[3] || await loadOperationalSettings();
+		appState.interfaces = data[4] || [];
+		appState.versions = data[5] || { app: 'unknown', clash: 'unknown' };
+		appState.kernelStatus = data[6] || { installed: false, version: null };
+		appState.serviceRunning = !!data[7];
+		appState.proxyMode = data[8] || 'tproxy';
+
+		appState.selectedInterfaces = await loadInterfacesByMode(appState.settings.mode || 'exclude');
+		appState.detectedLan = appState.settings.detectedLan || (await detectLanBridge()) || '';
+		appState.detectedWan = appState.settings.detectedWan || (await detectWanInterface()) || '';
+
+		pageRoot = E('div', { 'class': 'sbox-page' }, [
+			E('style', {}, PAGE_CSS),
+			E('div', { 'id': 'sbox-root' })
+		]);
+
+		pageRoot.querySelector('#sbox-root').innerHTML = buildPageHtml();
+		applyUiTheme(appState.uiTheme);
+		if (!savedTheme) {
+			saveThemePreference(appState.uiTheme).catch(() => {});
+		}
+
+		try {
+			await initializeAceEditor(appState.configContent);
+		} catch (e) {
+			notify('error', _('Failed to initialize editor: %s').format(e.message));
+		}
+
+		bindControlAndHeaderEvents();
+		bindConfigEvents();
+		bindTabEvents();
+		renderSettingsPane();
+		updateHeaderAndControlDom();
+		refreshReleaseMeta({ force: true }).catch(() => {});
+
+		startControlPolling();
+		startUpdatePolling();
+
+		document.addEventListener('visibilitychange', () => {
+			if (document.hidden) {
+				stopLogPolling();
+			} else if (appState.activeCfgTab === 'logs') {
+				refreshLogs().catch(() => {});
+				startLogPolling();
+			}
+			if (!document.hidden) {
+				refreshReleaseMeta({ force: false }).catch(() => {});
+			}
+		});
+
+		return pageRoot;
+	}
+});
