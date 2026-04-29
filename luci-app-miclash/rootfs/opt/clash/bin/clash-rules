@@ -2990,4 +2990,43 @@ case "$1" in
         load_all_settings_once
         case "$PROXY_MODE" in
             "tun"|"mixed") tun_route_setup ;;
-            *) msg "tun
+            *) msg "tun_route_watch: nothing to do for proxy mode '$PROXY_MODE'" ;;
+        esac
+        ;;
+    validate_policy)
+        if validate_policy_routing_state; then
+            msg "Policy routing state is healthy"
+            exit 0
+        else
+            warn "Policy routing state check failed"
+            exit 1
+        fi
+        ;;
+    repair_policy)
+        if repair_policy_routing_state; then
+            msg "Policy routing state repaired successfully"
+            exit 0
+        else
+            warn "Policy routing repair failed"
+            exit 1
+        fi
+        ;;
+    validate_forward)
+        if validate_forward_state; then
+            msg "Forward firewall rules are healthy"
+            exit 0
+        else
+            warn "Forward firewall rules missing"
+            exit 1
+        fi
+        ;;
+    repair_forward_rules)
+        repair_forward_rules
+        exit $?
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|update|update-ip-whitelist|guard_start|guard_stop|guard_refresh|full_cleanup|tun_route_setup|tun_route_watch|validate_policy|repair_policy|validate_forward|repair_forward_rules}"
+        exit 1
+        ;;
+esac
+
