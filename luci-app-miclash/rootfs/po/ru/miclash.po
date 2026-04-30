@@ -1091,3 +1091,12 @@ msgstr "Сетевой доступ заблокирован опцией \"Ин
 
 msgid "Auto-hide notifications"
 msgstr "Автоматически скрывать уведомления"
+
+msgid "Release channel"
+msgstr "Канал релизов"
+
+msgid "Release only"
+msgstr "Только релизы"
+
+msgid "Release + pre-release"
+msgstr "Релизы + pre-release"
