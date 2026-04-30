@@ -717,7 +717,7 @@ async function installMiClashDependencies(manager) {
 	if (manager.type === 'apk') {
 		await execOrThrow(
 			manager.bin,
-			['add', 'curl', 'kmod-nft-tproxy', 'kmod-tun', 'coreutils-base64'],
+			['add', 'curl', 'kmod-nft-tproxy', 'kmod-nft-nat', 'kmod-tun', 'coreutils-base64'],
 			_('Failed to install MiClash dependencies.')
 		);
 		return;
@@ -727,10 +727,11 @@ async function installMiClashDependencies(manager) {
 	const majorMatch = String(release || '').match(/^(\d+)/);
 	const major = majorMatch ? parseInt(majorMatch[1], 10) : 0;
 	const tproxyPkg = major > 0 && major < 23 ? 'iptables-mod-tproxy' : 'kmod-nft-tproxy';
+	const natPkg = major > 0 && major < 23 ? 'kmod-ipt-nat' : 'kmod-nft-nat';
 
 	await execOrThrow(
 		manager.bin,
-		['install', 'curl', tproxyPkg, 'kmod-tun', 'coreutils-base64'],
+		['install', 'curl', tproxyPkg, natPkg, 'kmod-tun', 'coreutils-base64'],
 		_('Failed to install MiClash dependencies.')
 	);
 }
@@ -846,11 +847,13 @@ async function installKernelFromSettings() {
 	const ok = await downloadMihomoKernel(asset.browser_download_url, release.version, arch);
 	if (!ok) return false;
 
-	try {
-		await execService('restart');
-		notify('info', _('Kernel installed and service restarted.'));
-	} catch (e) {
-		notify('error', _('Kernel installed, but failed to restart service: %s').format(e.message));
+	if (await getServiceStatus()) {
+		try {
+			await execService('restart');
+			notify('info', _('Kernel installed and service restarted.'));
+		} catch (e) {
+			notify('error', _('Kernel installed, but failed to restart service: %s').format(e.message));
+		}
 	}
 
 	appState.kernelStatus = await getMihomoStatus();
@@ -965,11 +968,13 @@ async function openKernelModal() {
 					ctx.button.textContent = _('Downloading...');
 					const ok = await downloadMihomoKernel(asset.browser_download_url, release.version, arch);
 					if (ok) {
-						try {
-							await execService('restart');
-							notify('info', _('Kernel installed and service restarted.'));
-						} catch (e) {
-							notify('error', _('Kernel installed, but failed to restart service: %s').format(e.message));
+						if (await getServiceStatus()) {
+							try {
+								await execService('restart');
+								notify('info', _('Kernel installed and service restarted.'));
+							} catch (e) {
+								notify('error', _('Kernel installed, but failed to restart service: %s').format(e.message));
+							}
 						}
 						await refreshHeaderAndControl();
 						ctx.closeModal();
@@ -1658,11 +1663,12 @@ function transformProxyMode(content, proxyMode, tunStack) {
 
 		if (trimmed === '' && i + 1 < lines.length) {
 			const nextLine = lines[i + 1].trim();
-			if (/^#\s*Proxy\s+Mode:/i.test(nextLine) || /^tproxy-port/.test(nextLine) || /^tun:/.test(nextLine)) {
+			if (/^#\s*Proxy\s+Mode:/i.test(nextLine) || /^redir-port/.test(nextLine) || /^tproxy-port/.test(nextLine) || /^tun:/.test(nextLine)) {
 				continue;
 			}
 		}
 
+		if (/^redir-port:/.test(trimmed)) continue;
 		if (/^tproxy-port:/.test(trimmed)) continue;
 
 		if (/^tun:/.test(trimmed)) {
@@ -1695,7 +1701,7 @@ function transformProxyMode(content, proxyMode, tunStack) {
 
 	switch (proxyMode) {
 		case 'tproxy':
-			configToInsert = ['# Proxy Mode: TPROXY', 'tproxy-port: 7894'];
+			configToInsert = ['# Proxy Mode: TPROXY', 'redir-port: 7892', 'tproxy-port: 7894'];
 			break;
 		case 'tun':
 			configToInsert = [
@@ -1712,6 +1718,7 @@ function transformProxyMode(content, proxyMode, tunStack) {
 		case 'mixed':
 			configToInsert = [
 				'# Proxy Mode: MIXED (TCP via TPROXY, UDP via TUN)',
+				'redir-port: 7892',
 				'tproxy-port: 7894',
 				'tun:',
 				'  enable: true',
@@ -3440,7 +3447,12 @@ function bindConfigEvents() {
 				appState.subscriptionUrl = url;
 
 				const downloadedInfo = await fetchSubscriptionAsYaml(url, selectedPath);
-				const downloaded = String(downloadedInfo.content || '').trimEnd() + '\n';
+				const currentSettings = appState.settings || await loadOperationalSettings();
+				const downloaded = transformProxyMode(
+					String(downloadedInfo.content || '').trimEnd() + '\n',
+					normalizeProxyMode(appState.proxyMode || currentSettings.proxyMode || 'tproxy'),
+					currentSettings.tunStack || 'system'
+				);
 
 				const tested = await testConfigContent(downloaded, true, selectedPath);
 				if (!tested.ok) throw new Error(_('YAML validation failed: %s').format(tested.message));
@@ -3451,15 +3463,19 @@ function bindConfigEvents() {
 					editor.clearSelection();
 				}
 
+				let serviceReloaded = false;
 				if (selectedConfig === MAIN_CONFIG_NAME) {
-					await execService('reload');
+					if (await getServiceStatus()) {
+						await execService('reload');
+						serviceReloaded = true;
+					}
 					appState.serviceRunning = await getServiceStatus();
 					updateHeaderAndControlDom();
 				}
 
-				if (downloadedInfo.mode === 'remnawave-client-path') {
+				if (downloadedInfo.mode === 'remnawave-client-path' && serviceReloaded) {
 					notify('info', _('Subscription downloaded and applied (Remnawave /mihomo fallback).'));
-				} else if (selectedConfig === MAIN_CONFIG_NAME) {
+				} else if (serviceReloaded) {
 					notify('info', _('Subscription downloaded and applied.'));
 				} else {
 					notify('info', _('%s downloaded and saved.').format(_(getConfigLabel(selectedConfig))));
@@ -3499,10 +3515,13 @@ function bindConfigEvents() {
 			appState.configContent = editor.getValue();
 
 			if (selectedConfig === MAIN_CONFIG_NAME) {
-				await execService('reload');
+				const wasRunning = await getServiceStatus();
+				if (wasRunning) {
+					await execService('reload');
+				}
 				appState.serviceRunning = await getServiceStatus();
 				updateHeaderAndControlDom();
-				notify('info', _('Configuration applied and service reloaded.'));
+				notify('info', wasRunning ? _('Configuration applied and service reloaded.') : _('%s saved.').format(_(getConfigLabel(selectedConfig))));
 			} else {
 				notify('info', _('%s saved.').format(_(getConfigLabel(selectedConfig))));
 			}
